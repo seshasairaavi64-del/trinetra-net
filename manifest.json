@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "Trinetra.net",
+  "version": "5.0.0",
+  "description": "Auto-analyzes Terms & Conditions with RBI, GDPR, DPDP Act citations. No clicking needed.",
+  "permissions": ["activeTab", "scripting", "storage", "tabs"],
+  "host_permissions": [
+    "http://localhost:5000/*",
+    "https://localhost:5000/*",
+    "<all_urls>"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Trinetra.net — Legal Intelligence"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  }
+}
