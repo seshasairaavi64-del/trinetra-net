@@ -8,7 +8,7 @@
   // ── IMPORTANT: Replace with your Railway URL after deploying ──────────────────
   // Get it from: railway.app → your project → Settings → Domains
   // Example: "https://trinetra-backend-production.up.railway.app"
-  const API_BASE = "https://YOUR-RAILWAY-URL.up.railway.app";
+  const API_BASE = "https://trinetra-net-production.up.railway.app";
   let analysisData  = null;
   let rawPageText   = "";   // stores the full T&C text for blockchain evidence
   let sidebarOpen   = false;
@@ -1191,7 +1191,10 @@
 
   // ── Blockchain Hash & Ledger ──────────────────────────────────────────────
   async function doHash() {
-    if (!analysisData) return;
+    if (!analysisData) {
+      showToastSimple("⚠️ Analyze a T&C page first before hashing.");
+      return;
+    }
     const btn = document.getElementById("tri-btn-hash");
     if (btn) { btn.disabled = true; btn.textContent = "⏳ Storing…"; }
 
@@ -1202,21 +1205,44 @@
         body: JSON.stringify({
           url:      location.href,
           analysis: analysisData,
-          raw_text: rawPageText    // full T&C text as tamper-proof evidence
+          raw_text: rawPageText
         })
       });
-      if (!res.ok) throw new Error(`Hash error ${res.status}`);
+
+      if (!res.ok) {
+        const errText = await res.text().catch(()=>"");
+        throw new Error(`Server error ${res.status}: ${errText.substring(0,80)}`);
+      }
+
       const d = await res.json();
 
-      // Just show the compact block record at the TOP of the clause list
+      if (d.error) throw new Error(d.error);
+
+      // Show compact chain record at top of clause list
       renderCompactChainRecord(d);
-      if (btn) { btn.textContent = "✅ Stored"; btn.style.color = "#00dba0"; }
+
+      // Update button to show stored
+      if (btn) {
+        btn.textContent = "✅ Stored";
+        btn.style.color  = "#00dba0";
+        btn.style.border = "1px solid rgba(0,219,160,0.4)";
+      }
+
+      showToastSimple(`✅ Evidence stored! Block #${d.block_id} · ${d.raw_text_kb || 0}KB T&C text saved`);
+      console.log("⛓ Trinetra hash stored:", d);
 
     } catch(e) {
+      console.error("Hash error:", e);
       showToastSimple("❌ Hash failed: " + e.message);
-      if (btn) { btn.disabled = false; btn.textContent = "🔗 Hash & Store"; }
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = "🔗 Hash & Store";
+        btn.style.color  = "";
+        btn.style.border = "";
+      }
     }
   }
+
 
   function renderCompactChainRecord(block) {
     // Remove any existing chain record
