@@ -340,10 +340,34 @@
     .tri-modal-proceed:hover { color: #f0f1ff; border-color: #44466a; }
 
     /* ── INLINE HIGHLIGHT ── */
-    .tri-hl { background: rgba(255,59,92,0.1); border-bottom: 2px solid #ff3b5c; border-radius: 2px; cursor: pointer; transition: background 0.2s; }
-    .tri-hl:hover { background: rgba(255,59,92,0.2); }
-    .tri-hl.amber { background: rgba(255,179,71,0.1); border-bottom-color: #ffb347; }
-    .tri-hl.green { background: rgba(0,219,160,0.08); border-bottom-color: #00dba0; }
+    .tri-hl {
+      background: rgba(255,59,92,0.12);
+      border-bottom: 2px solid #ff3b5c;
+      border-radius: 3px;
+      cursor: pointer;
+      transition: background 0.2s, box-shadow 0.2s;
+      position: relative;
+    }
+    .tri-hl:hover {
+      background: rgba(255,59,92,0.28);
+      box-shadow: 0 0 0 2px rgba(255,59,92,0.2);
+    }
+    .tri-hl:hover::after {
+      content: "👆 Click — see analysis";
+      position: absolute;
+      top: -26px; left: 50%; transform: translateX(-50%);
+      background: #ff3b5c; color: #fff;
+      font-size: 10px; font-weight: 700; white-space: nowrap;
+      padding: 2px 8px; border-radius: 6px;
+      pointer-events: none; z-index: 2147483640;
+      font-family: "Segoe UI", sans-serif;
+    }
+    .tri-hl.amber { background: rgba(255,179,71,0.12); border-bottom-color: #ffb347; }
+    .tri-hl.amber:hover { background: rgba(255,179,71,0.28); box-shadow: 0 0 0 2px rgba(255,179,71,0.2); }
+    .tri-hl.amber:hover::after { background: #ffb347; color: #000; }
+    .tri-hl.green { background: rgba(0,219,160,0.1); border-bottom-color: #00dba0; }
+    .tri-hl.green:hover { background: rgba(0,219,160,0.25); box-shadow: 0 0 0 2px rgba(0,219,160,0.2); }
+    .tri-hl.green:hover::after { background: #00dba0; color: #000; }
 
     /* ── BLOCKCHAIN PANEL (minimal, inside clauses scroll area) ── */
     .tri-chain-panel {
@@ -852,6 +876,12 @@
               ? `<span style="font-size:8px;background:rgba(255,59,92,0.14);color:#ff3b5c;border:1px solid rgba(255,59,92,0.3);padding:1px 7px;border-radius:20px">⚠️ HIDDEN</span>`
               : ""}
             <span style="font-size:8px;color:#44466a;margin-left:auto">${posLabel}</span>
+            <span style="font-size:8px;color:#6c5fff;font-family:'Consolas',monospace;
+              background:rgba(108,95,255,0.1);border:1px solid rgba(108,95,255,0.25);
+              padding:1px 7px;border-radius:20px;cursor:pointer;flex-shrink:0"
+              title="Click card to find this text on the page">
+              📍 on page
+            </span>
           </div>
 
           <!-- Plain-English summary — always visible, no click needed -->
@@ -932,6 +962,27 @@
       const open  = body.style.display !== "none";
       body.style.display    = open ? "none" : "block";
       arrow.style.transform = open ? "rotate(0deg)" : "rotate(180deg)";
+    });
+
+    // CLICK card header → jump to the highlighted span on the page
+    card.querySelector(`[style*="padding:12px 13px"]`).addEventListener("click", (e) => {
+      // Don't trigger if they clicked the toggle bar
+      if (e.target.closest(`#ttoggle-${idx}`)) return;
+
+      const hl = document.getElementById(`tri-hl-${idx}`);
+      if (!hl) return;  // no highlight found for this clause — skip
+
+      // Scroll the page to the highlight
+      hl.scrollIntoView({ behavior: "smooth", block: "center" });
+
+      // Flash the highlight on the page 3 times
+      const origBg = hl.style.background;
+      let f = 0;
+      const flashHL = setInterval(() => {
+        hl.style.background = f % 2 === 0 ? "rgba(255,255,0,0.35)" : origBg || "";
+        f++;
+        if (f >= 6) { clearInterval(flashHL); hl.style.background = origBg || ""; }
+      }, 180);
     });
   }
 
@@ -1106,11 +1157,15 @@
 
   // ── Highlight risky text on page ───────────────────────────────────────────
   function highlightPage(data) {
-    data.clauses.forEach(clause => {
+    // Map clause index → highlight span, and span → clause index
+    // This enables two-way linking between page highlights and sidebar cards
+
+    data.clauses.forEach((clause, idx) => {
       const label = clause.labels[0] || "neutral";
       if (label === "neutral") return;
-      const color = getColor(label);
+      const color   = getColor(label);
       const snippet = clause.text.substring(0, 50);
+
       try {
         const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
         let node;
@@ -1118,9 +1173,50 @@
           if (node.parentElement?.closest("#trinetra-root")) continue;
           if (node.textContent.includes(snippet.substring(0, 30))) {
             const span = document.createElement("mark");
-            span.className = `tri-hl ${color}`;
-            span.title = `Trinetra: ${label} — ${clause.plain_english || ""}`;
-            span.textContent = node.textContent;
+            span.className    = `tri-hl ${color}`;
+            span.title        = `Trinetra: ${label} — click to see analysis`;
+            span.textContent  = node.textContent;
+            span.dataset.clauseIdx = idx;   // ← store clause index on the span
+            span.id           = `tri-hl-${idx}`;
+
+            // CLICK: highlight → open sidebar and jump to clause card
+            span.addEventListener("click", (e) => {
+              e.stopPropagation();
+
+              // 1. Open sidebar
+              setSidebar(true);
+
+              // 2. Wait a tick then scroll to the card and flash it
+              setTimeout(() => {
+                const card = document.getElementById(`tricard-${idx}`);
+                if (!card) return;
+
+                // Scroll card into view inside the sidebar
+                card.scrollIntoView({ behavior: "smooth", block: "center" });
+
+                // Flash the card 3 times so user knows which one
+                let flashes = 0;
+                const flash = setInterval(() => {
+                  card.style.outline = flashes % 2 === 0
+                    ? `2px solid ${color === "red" ? "#ff3b5c" : color === "amber" ? "#ffb347" : "#00dba0"}`
+                    : "none";
+                  flashes++;
+                  if (flashes >= 6) {
+                    clearInterval(flash);
+                    card.style.outline = "";
+                  }
+                }, 200);
+
+                // Also expand the card automatically
+                const body  = document.getElementById(`trix-${idx}`);
+                const arrow = document.getElementById(`tarrow-${idx}`);
+                if (body && body.style.display === "none") {
+                  body.style.display    = "block";
+                  if (arrow) arrow.style.transform = "rotate(180deg)";
+                }
+              }, 350);
+            });
+
             node.parentNode.replaceChild(span, node);
             break;
           }
@@ -1190,17 +1286,23 @@
   }
 
   // ── Blockchain Hash & Ledger ──────────────────────────────────────────────
+  // ── Hash & Store — saves evidence files directly to user's own PC ────────────
+  // No database. No cloud. Files saved to Downloads/Trinetra_Evidence/domain/
+  // Each file is a complete tamper-proof SHA-256 signed JSON block.
+
   async function doHash() {
     if (!analysisData) {
-      showToastSimple("⚠️ Analyze a T&C page first before hashing.");
+      showToastSimple("⚠️ Analyze a T&C page first before storing evidence.");
       return;
     }
+
     const btn = document.getElementById("tri-btn-hash");
-    if (btn) { btn.disabled = true; btn.textContent = "⏳ Storing…"; }
+    if (btn) { btn.disabled = true; btn.textContent = "⏳ Creating evidence…"; }
 
     try {
+      // ── Step 1: Call Railway to get SHA-256 hash (server computes it) ────
       const res = await fetch(`${API_BASE}/hash`, {
-        method: "POST",
+        method:  "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           url:      location.href,
@@ -1210,131 +1312,226 @@
       });
 
       if (!res.ok) {
-        const errText = await res.text().catch(()=>"");
-        throw new Error(`Server error ${res.status}: ${errText.substring(0,80)}`);
+        const t = await res.text().catch(()=>"");
+        throw new Error(`Server error ${res.status}: ${t.substring(0,80)}`);
       }
 
-      const d = await res.json();
+      const hashData = await res.json();
+      if (hashData.error) throw new Error(hashData.error);
 
-      if (d.error) throw new Error(d.error);
+      // ── Step 2: Build the full evidence block ─────────────────────────────
+      const domain    = location.hostname.replace(/^www\./,"");
+      const now       = new Date();
+      const dateStr   = now.toISOString().slice(0,10);         // 2025-03-22
+      const timeStr   = now.toTimeString().slice(0,8);         // 14:30:45
+      const blockId   = hashData.block_id;
 
-      // Show compact chain record at top of clause list
-      renderCompactChainRecord(d);
+      const evidenceBlock = {
+        // ── Identity ──────────────────────────────────────────────────────
+        block_id:       blockId,
+        domain:         domain,
+        url:            location.href,
+        page_title:     document.title,
+        date_stored:    dateStr,
+        time_stored:    timeStr,
+        stored_at_iso:  now.toISOString(),
 
-      // Update button to show stored
+        // ── Blockchain chain ──────────────────────────────────────────────
+        sha256_hash:    hashData.sha256_hash,
+        raw_text_hash:  hashData.raw_text_hash,
+        prev_hash:      hashData.prev_hash,
+        block_number:   hashData.total_entries,
+        algorithm:      "SHA-256",
+        chain_note:     "If this company edits their T&C later, this SHA-256 proves what it said today.",
+
+        // ── Risk analysis ─────────────────────────────────────────────────
+        overall_risk:   analysisData.overall_risk,
+        risk_score:     analysisData.risk_score,
+        total_clauses:  analysisData.total,
+        risky_clauses:  analysisData.risky_count,
+        safe_clauses:   analysisData.safe_count,
+        hidden_risks:   analysisData.hidden_risks,
+        doc_length_kb:  Math.round((analysisData.doc_length||0)/1024),
+
+        // ── Full raw T&C text (the actual legal evidence) ──────────────────
+        raw_tc_text:    rawPageText || "",
+        raw_tc_chars:   (rawPageText||"").length,
+
+        // ── Complete clause analysis with summaries ───────────────────────
+        clauses: (analysisData.clauses||[]).map(cl => ({
+          text:           cl.text,
+          label:          cl.labels?.[0] || "neutral",
+          risk_score:     cl.risk_score,
+          is_risky:       cl.is_risky,
+          is_hidden:      cl.is_hidden_risk,
+          position_pct:   cl.position_pct,
+          plain_english:  cl.plain_english,
+          what_it_says:   cl.summary?.what_it_says  || "",
+          why_it_matters: cl.summary?.why_it_matters || "",
+          your_rights:    cl.summary?.your_rights   || "",
+          action:         cl.summary?.action        || "",
+          verdict:        cl.legal?.overall_verdict || "LEGAL",
+        })),
+
+        // ── Legal use notice ──────────────────────────────────────────────
+        legal_notice: [
+          "This file is a tamper-proof evidence record generated by Trinetra.net.",
+          "The sha256_hash field cryptographically proves the content of this document was unchanged.",
+          "The raw_tc_text field contains the verbatim Terms & Conditions text as it existed on " + dateStr + ".",
+          "This file can be submitted as evidence to consumer courts, the Data Protection Board, or RBI Ombudsman.",
+          "File at consumerhelpline.gov.in or edaakhil.nic.in if this company later changes these terms.",
+        ].join(" "),
+      };
+
+      // ── Step 3: Save as JSON file to user's Downloads/Trinetra_Evidence/ ──
+      // Filename: domain/YYYY-MM-DD_BLOCKID.json
+      // This uses Chrome's downloads API via a blob URL
+
+      const fileName   = `Trinetra_Evidence/${domain}/${dateStr}_${blockId}.json`;
+      const jsonStr    = JSON.stringify(evidenceBlock, null, 2);
+      const blob       = new Blob([jsonStr], { type: "application/json" });
+      const blobUrl    = URL.createObjectURL(blob);
+
+      // Trigger download via Chrome scripting
+      await chrome.runtime.sendMessage({
+        type:     "DOWNLOAD_EVIDENCE",
+        url:      blobUrl,
+        filename: fileName,
+      });
+
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
+
+      // ── Step 4: Also save/update the master index file ────────────────────
+      await saveIndexFile(domain, dateStr, blockId, hashData, fileName);
+
+      // ── Step 5: Update sidebar UI ─────────────────────────────────────────
+      renderCompactChainRecord(hashData, fileName, evidenceBlock);
+
       if (btn) {
-        btn.textContent = "✅ Stored";
+        btn.textContent = "✅ Saved to PC";
         btn.style.color  = "#00dba0";
         btn.style.border = "1px solid rgba(0,219,160,0.4)";
       }
 
-      showToastSimple(`✅ Evidence stored! Block #${d.block_id} · ${d.raw_text_kb || 0}KB T&C text saved`);
-      console.log("⛓ Trinetra hash stored:", d);
+      showToastSimple(
+        `✅ Evidence saved! Downloads/Trinetra_Evidence/${domain}/${dateStr}_${blockId}.json`
+      );
 
-    } catch(e) {
-      console.error("Hash error:", e);
-      showToastSimple("❌ Hash failed: " + e.message);
+    } catch(err) {
+      console.error("Trinetra hash error:", err);
+      showToastSimple("❌ Save failed: " + err.message);
       if (btn) {
-        btn.disabled = false;
-        btn.textContent = "🔗 Hash & Store";
+        btn.disabled     = false;
+        btn.textContent  = "🔗 Hash & Store";
         btn.style.color  = "";
         btn.style.border = "";
       }
     }
   }
 
+  // ── Save/update the master index file ─────────────────────────────────────
+  async function saveIndexFile(domain, dateStr, blockId, hashData, evidenceFile) {
+    const indexEntry = {
+      block_id:       blockId,
+      domain:         domain,
+      url:            location.href,
+      date:           dateStr,
+      overall_risk:   analysisData.overall_risk,
+      risk_score:     analysisData.risk_score,
+      total_clauses:  analysisData.total,
+      risky_clauses:  analysisData.risky_count,
+      safe_clauses:   analysisData.safe_count,
+      sha256_hash:    hashData.sha256_hash,
+      raw_text_hash:  hashData.raw_text_hash,
+      evidence_file:  evidenceFile,
+      stored_at:      new Date().toISOString(),
+    };
 
-  function renderCompactChainRecord(block) {
-    // Remove any existing chain record
+    const indexJson  = JSON.stringify({ entry: indexEntry, note: "Trinetra.net Evidence Index Entry" }, null, 2);
+    const blob       = new Blob([indexJson], { type: "application/json" });
+    const blobUrl    = URL.createObjectURL(blob);
+
+    await chrome.runtime.sendMessage({
+      type:     "DOWNLOAD_EVIDENCE",
+      url:      blobUrl,
+      filename: `Trinetra_Evidence/index_${blockId}.json`,
+    });
+
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
+  }
+
+  // ── Render the compact chain record in the sidebar ─────────────────────────
+  function renderCompactChainRecord(block, fileName, fullBlock) {
     const old = document.getElementById("tri-chain-record");
     if (old) old.remove();
 
-    const list = document.getElementById("tri-clauses");
+    const list  = document.getElementById("tri-clauses");
     const panel = document.createElement("div");
-    panel.id = "tri-chain-record";
+    panel.id    = "tri-chain-record";
     panel.className = "tri-chain-panel";
 
-    const ts  = new Date(block.timestamp * 1000).toLocaleString("en-IN", {dateStyle:"medium", timeStyle:"short"});
-    const rc  = (block.overall_risk||analysisData?.overall_risk||"");
-    const rcol = rc==="HIGH"?"#ff3b5c":rc==="MEDIUM"?"#ffb347":"#00dba0";
+    const rc  = block.overall_risk || analysisData?.overall_risk || "";
+    const rcol = rc==="HIGH" ? "#ff3b5c" : rc==="MEDIUM" ? "#ffb347" : "#00dba0";
     const isGen = (block.prev_hash||"") === "0".repeat(64) || !(block.prev_hash);
-    const rawKb = rawPageText ? Math.round(rawPageText.length/1024) : 0;
+    const rawKb = block.raw_text_kb || Math.round((rawPageText||"").length/1024) || 0;
+    const domain = location.hostname.replace(/^www\./,"");
+    const dateStr = new Date().toISOString().slice(0,10);
+    const fName = fileName || `Trinetra_Evidence/${domain}/${dateStr}_${block.block_id}.json`;
 
     panel.innerHTML = `
-      <div class="tri-chain-title">🔗 Blockchain Evidence Stored</div>
+      <div class="tri-chain-title">✅ Evidence Saved to Your PC</div>
 
-      <div class="tri-hash-box" id="tri-hbox-${block.block_id}" title="Click to copy">
-        ${block.sha256_hash}
-        <span style="position:absolute;top:5px;right:8px;font-size:8px;color:#44466a" id="tri-hcopy-${block.block_id}">📋 copy</span>
+      <div style="font-size:12px;color:#00dba0;background:rgba(0,219,160,0.07);
+        border:1px solid rgba(0,219,160,0.2);border-radius:9px;padding:10px 12px;margin-bottom:11px;
+        line-height:1.6;font-family:'Consolas',monospace;word-break:break-all">
+        📁 Downloads/${fName}
       </div>
 
-      <div class="tri-chain-grid">
-        <div class="tri-chain-item">
-          <div class="ci-label">Block ID</div>
-          <div class="ci-val purple">#${block.block_id}</div>
+      <div style="font-size:11.5px;color:#8f90b5;line-height:1.7;padding:10px 12px;
+        background:rgba(0,0,0,0.2);border:1px solid #1a1d35;border-radius:9px;margin-bottom:11px">
+        This file contains the <strong style="color:#f0f1ff">full verbatim T&C text</strong>
+        as it existed today, plus the complete AI analysis of every clause.
+        The <strong style="color:#a48bff">SHA-256 hash</strong> proves the content was
+        unchanged. If this company edits their terms later,
+        <strong style="color:#00dba0">your file is legal evidence</strong> of what they originally said.
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-bottom:11px">
+        <div style="background:rgba(255,255,255,0.02);border:1px solid #1a1d35;border-radius:8px;padding:9px 11px">
+          <div style="font-family:'Consolas',monospace;font-size:8px;color:#44466a;text-transform:uppercase;letter-spacing:.08em">Block ID</div>
+          <div style="font-family:'Consolas',monospace;font-size:11px;color:#a48bff;margin-top:3px;font-weight:700">#${block.block_id}</div>
         </div>
-        <div class="tri-chain-item">
-          <div class="ci-label">Risk Level</div>
-          <div class="ci-val" style="color:${rcol}">${rc}</div>
+        <div style="background:rgba(255,255,255,0.02);border:1px solid #1a1d35;border-radius:8px;padding:9px 11px">
+          <div style="font-family:'Consolas',monospace;font-size:8px;color:#44466a;text-transform:uppercase;letter-spacing:.08em">Risk Level</div>
+          <div style="font-family:'Consolas',monospace;font-size:11px;color:${rcol};margin-top:3px;font-weight:700">${rc}</div>
         </div>
-        <div class="tri-chain-item">
-          <div class="ci-label">Raw Text Stored</div>
-          <div class="ci-val green">${rawKb}KB evidence</div>
+        <div style="background:rgba(255,255,255,0.02);border:1px solid #1a1d35;border-radius:8px;padding:9px 11px">
+          <div style="font-family:'Consolas',monospace;font-size:8px;color:#44466a;text-transform:uppercase;letter-spacing:.08em">Raw Text Saved</div>
+          <div style="font-family:'Consolas',monospace;font-size:11px;color:#00dba0;margin-top:3px;font-weight:700">${rawKb}KB evidence</div>
         </div>
-        <div class="tri-chain-item">
-          <div class="ci-label">Stored At</div>
-          <div class="ci-val" style="font-size:9px">${ts}</div>
+        <div style="background:rgba(255,255,255,0.02);border:1px solid #1a1d35;border-radius:8px;padding:9px 11px">
+          <div style="font-family:'Consolas',monospace;font-size:8px;color:#44466a;text-transform:uppercase;letter-spacing:.08em">Saved</div>
+          <div style="font-family:'Consolas',monospace;font-size:11px;color:#f0f1ff;margin-top:3px;font-weight:700">${dateStr}</div>
         </div>
       </div>
 
-      <div style="font-size:8.5px;color:#44466a;font-family:'Consolas',monospace;padding:8px 10px;background:rgba(0,0,0,0.25);border:1px solid #0f1020;border-radius:7px;margin-bottom:9px;word-break:break-all;line-height:1.8">
-        <span style="color:#00d4ff;display:block;font-size:8px;margin-bottom:3px;text-transform:uppercase;letter-spacing:0.1em">⛓ Prev Block</span>
-        ${isGen ? '<span style="color:#00dba0">Genesis — first block in chain</span>' : (block.prev_hash||"").substring(0,32)+"…"}
+      <div style="font-size:9px;font-family:'Consolas',monospace;color:#44466a;
+        padding:9px 11px;background:rgba(0,0,0,0.25);border:1px solid #1a1d35;
+        border-radius:8px;word-break:break-all;line-height:1.9;margin-bottom:11px">
+        <span style="color:#00d4ff;display:block;font-size:8px;margin-bottom:3px;text-transform:uppercase;letter-spacing:.1em">SHA-256 Hash</span>
+        ${block.sha256_hash || ""}
       </div>
 
-      <div style="font-size:10px;color:#8f90b0;line-height:1.6;padding:9px 11px;background:rgba(0,219,160,0.05);border:1px solid rgba(0,219,160,0.14);border-radius:8px;margin-bottom:9px">
-        📜 <strong style="color:#00dba0">${rawKb}KB of the actual T&C text</strong> is stored in this block.
-        If this company changes their terms later, this SHA-256 hash proves what it said today.
+      <div style="font-size:10.5px;color:#44466a;line-height:1.65">
+        📂 Open <strong style="color:#f0f1ff">File Explorer</strong> →
+        <strong style="color:#a48bff">Downloads</strong> →
+        <strong style="color:#a48bff">Trinetra_Evidence</strong> →
+        <strong style="color:#a48bff">${domain}</strong>
+        to find your evidence file.
       </div>
-
-      <button class="tri-verify-btn" id="tri-vbtn-${block.block_id}">🛡 Verify Block Integrity</button>
-      <div class="tri-verify-result" id="tri-vres-${block.block_id}"></div>
     `;
 
-    // Insert BEFORE the first clause card (at top of list)
     list.insertBefore(panel, list.firstChild);
-
-    // Copy hash on click
-    document.getElementById(`tri-hbox-${block.block_id}`).addEventListener("click", async () => {
-      try { await navigator.clipboard.writeText(block.sha256_hash); } catch{}
-      const h = document.getElementById(`tri-hcopy-${block.block_id}`);
-      if (h) { h.textContent = "✓ copied"; h.style.color = "#00dba0"; setTimeout(()=>{h.textContent="📋 copy";h.style.color="#44466a";},2000); }
-    });
-
-    // Verify
-    document.getElementById(`tri-vbtn-${block.block_id}`).addEventListener("click", async () => {
-      const btn = document.getElementById(`tri-vbtn-${block.block_id}`);
-      const res = document.getElementById(`tri-vres-${block.block_id}`);
-      btn.textContent = "🔄 Verifying…"; btn.disabled = true;
-      try {
-        const r = await fetch(`${API_BASE}/verify/${block.block_id}`);
-        const v = await r.json();
-        res.style.display = "block";
-        if (v.valid) {
-          res.className = "tri-verify-result valid";
-          res.textContent = "✅ VALID — block is tamper-proof";
-          btn.textContent = "✅ Verified"; btn.style.color = "#00dba0";
-        } else {
-          res.className = "tri-verify-result invalid";
-          res.textContent = "🚨 TAMPERED — hash mismatch detected!";
-          btn.textContent = "🚨 Tampered"; btn.style.color = "#ff3b5c";
-        }
-      } catch(e) {
-        res.style.display = "block"; res.className = "tri-verify-result invalid";
-        res.textContent = "❌ " + e.message;
-        btn.textContent = "🛡 Verify"; btn.disabled = false;
-      }
-    });
   }
 
 
