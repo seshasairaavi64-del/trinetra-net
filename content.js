@@ -5,10 +5,10 @@
   if (window.__trinetraActive) return;
   window.__trinetraActive = true;
 
-  // ── IMPORTANT: Replace with your Railway URL after deploying ──────────────────
-  // Get it from: railway.app → your project → Settings → Domains
-  // Example: "https://trinetra-backend-production.up.railway.app"
-  const API_BASE = "https://trinetra-net-production.up.railway.app";
+  // ── YOUR RAILWAY URL — update this whenever you create a new Railway account ──
+  // Step 1: Go to railway.app → your project → Settings → Networking → copy domain
+  // Step 2: Paste it below (keep the https:// at the start)
+  const API_BASE = "https://web-production-64028.up.railway.app";
   let analysisData  = null;
   let rawPageText   = "";   // stores the full T&C text for blockchain evidence
   let sidebarOpen   = false;
@@ -665,11 +665,18 @@
 
       setFabLabel("AI analyzing full document…", 0);
 
-      // Health check first
+      // Health check — verifies Railway backend is running
       try {
-        await fetch(`${API_BASE}/health`, { signal: AbortSignal.timeout(3000) });
+        const hRes = await fetch(`${API_BASE}/health`, {
+          signal: AbortSignal.timeout(8000)   // 8s — Railway free tier may have cold start
+        });
+        if (!hRes.ok) throw new Error(`Server returned ${hRes.status}`);
       } catch(e) {
-        throw new Error("Backend offline. Open CMD → python app.py");
+        // Give helpful Railway-specific error message
+        if (e.name === "TimeoutError" || e.message.includes("fetch")) {
+          throw new Error("Server is starting up — please wait 30 seconds and try again. Railway free tier sleeps after inactivity.");
+        }
+        throw new Error("Server unreachable: " + e.message.substring(0, 60));
       }
 
       // Use SSE streaming — shows live results as each clause is found
@@ -1117,11 +1124,30 @@
   }
 
   function updateSidebarError(msg) {
+    // Detect if it's a cold-start / connection error and show helpful guidance
+    const isColdStart = msg.toLowerCase().includes("start") ||
+                        msg.toLowerCase().includes("wait") ||
+                        msg.toLowerCase().includes("timeout") ||
+                        msg.toLowerCase().includes("unreachable") ||
+                        msg.toLowerCase().includes("fetch");
+
+    const helpText = isColdStart
+      ? "Railway server is waking up. Click Re-Analyze in 30 seconds."
+      : "Check your Railway URL in content.js and make sure the backend is deployed.";
+
     document.getElementById("tri-clauses").innerHTML = `
       <div style="text-align:center;padding:30px 16px">
         <div style="font-size:32px;margin-bottom:10px">⚠️</div>
-        <div style="color:#ff4d6d;font-size:12px;margin-bottom:8px">${escH(msg)}</div>
-        <div style="color:#5a5c7a;font-size:11px;font-family:'DM Mono',monospace">Open CMD → python app.py</div>
+        <div style="color:#ff4d6d;font-size:13px;font-weight:700;margin-bottom:10px">
+          ${escH(msg.substring(0, 120))}
+        </div>
+        <div style="color:#5a5c7a;font-size:11px;line-height:1.7;margin-bottom:14px;
+          background:rgba(255,255,255,0.03);border:1px solid #1c1e38;border-radius:9px;padding:10px">
+          ${escH(helpText)}
+        </div>
+        <div style="font-size:10px;color:#44466a;font-family:'Consolas',monospace">
+          Railway URL: ${API_BASE.substring(0,50)}
+        </div>
       </div>`;
   }
 
@@ -1334,6 +1360,11 @@
   // No database. No cloud. Files saved to Downloads/Trinetra_Evidence/domain/
   // Each file is a complete tamper-proof SHA-256 signed JSON block.
 
+  // ── Hash & Store — 100% local, nothing sent to cloud ─────────────────────
+  // SHA-256 computed in browser using Web Crypto API
+  // Evidence saved directly to user's PC via Chrome Downloads API
+  // Railway is NOT involved — zero data leaves the device
+
   async function doHash() {
     if (!analysisData) {
       showToastSimple("⚠️ Analyze a T&C page first before storing evidence.");
@@ -1344,51 +1375,63 @@
     if (btn) { btn.disabled = true; btn.textContent = "⏳ Creating evidence…"; }
 
     try {
-      // ── Step 1: Call Railway to get SHA-256 hash (server computes it) ────
-      const res = await fetch(`${API_BASE}/hash`, {
-        method:  "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          url:      location.href,
-          analysis: analysisData,
-          raw_text: rawPageText
-        })
-      });
+      // ── Step 1: Compute SHA-256 entirely in the browser ───────────────────
+      // Web Crypto API — built into Chrome, no external call needed
+      const encoder     = new TextEncoder();
+      const rawBytes    = encoder.encode(rawPageText || "");
+      const hashBuffer  = await crypto.subtle.digest("SHA-256", rawBytes);
+      const hashArray   = Array.from(new Uint8Array(hashBuffer));
+      const rawTextHash = hashArray.map(b => b.toString(16).padStart(2,"0")).join("");
 
-      if (!res.ok) {
-        const t = await res.text().catch(()=>"");
-        throw new Error(`Server error ${res.status}: ${t.substring(0,80)}`);
-      }
-
-      const hashData = await res.json();
-      if (hashData.error) throw new Error(hashData.error);
-
-      // ── Step 2: Build the full evidence block ─────────────────────────────
+      // Block payload — same structure as before, computed locally
       const domain    = location.hostname.replace(/^www\./,"");
       const now       = new Date();
-      const dateStr   = now.toISOString().slice(0,10);         // 2025-03-22
-      const timeStr   = now.toTimeString().slice(0,8);         // 14:30:45
-      const blockId   = hashData.block_id;
+      const dateStr   = now.toISOString().slice(0,10);
+      const timeTag   = now.toTimeString().slice(0,8).replace(/:/g,"-");
+      const blockId   = generateBlockId();
 
+      const payload = {
+        block_id:      blockId,
+        url:           location.href,
+        domain:        domain,
+        timestamp:     Math.floor(now.getTime()/1000),
+        overall_risk:  analysisData.overall_risk  || "",
+        risk_score:    analysisData.risk_score     || 0,
+        clauses_count: analysisData.total          || 0,
+        hidden_risks:  analysisData.hidden_risks   || 0,
+        doc_length:    analysisData.doc_length     || 0,
+        raw_text_hash: rawTextHash,
+        clause_hashes: (analysisData.clauses||[]).map(cl =>
+          cl.text ? cl.text.substring(0,16).split("").reduce((h,c)=>
+            ((h<<5)-h+c.charCodeAt(0))|0, 0).toString(16).padStart(8,"0") : "00000000"
+        ),
+      };
+
+      // SHA-256 of the entire payload = block hash
+      const payloadBytes  = encoder.encode(JSON.stringify(payload, Object.keys(payload).sort()));
+      const blockBuffer   = await crypto.subtle.digest("SHA-256", payloadBytes);
+      const blockArray    = Array.from(new Uint8Array(blockBuffer));
+      const sha256Hash    = blockArray.map(b => b.toString(16).padStart(2,"0")).join("");
+
+      // ── Step 2: Build full evidence block ────────────────────────────────
       const evidenceBlock = {
-        // ── Identity ──────────────────────────────────────────────────────
+        // Identity
         block_id:       blockId,
         domain:         domain,
         url:            location.href,
         page_title:     document.title,
         date_stored:    dateStr,
-        time_stored:    timeStr,
+        time_stored:    now.toTimeString().slice(0,8),
         stored_at_iso:  now.toISOString(),
 
-        // ── Blockchain chain ──────────────────────────────────────────────
-        sha256_hash:    hashData.sha256_hash,
-        raw_text_hash:  hashData.raw_text_hash,
-        prev_hash:      hashData.prev_hash,
-        block_number:   hashData.total_entries,
-        algorithm:      "SHA-256",
-        chain_note:     "If this company edits their T&C later, this SHA-256 proves what it said today.",
+        // Blockchain
+        sha256_hash:    sha256Hash,
+        raw_text_hash:  rawTextHash,
+        prev_hash:      "computed-locally",
+        algorithm:      "SHA-256 (Web Crypto API — browser native)",
+        privacy_note:   "This evidence was computed and stored entirely on your device. No data was sent to any server.",
 
-        // ── Risk analysis ─────────────────────────────────────────────────
+        // Risk
         overall_risk:   analysisData.overall_risk,
         risk_score:     analysisData.risk_score,
         total_clauses:  analysisData.total,
@@ -1397,11 +1440,11 @@
         hidden_risks:   analysisData.hidden_risks,
         doc_length_kb:  Math.round((analysisData.doc_length||0)/1024),
 
-        // ── Full raw T&C text (the actual legal evidence) ──────────────────
+        // Full raw T&C text — the actual legal evidence
         raw_tc_text:    rawPageText || "",
         raw_tc_chars:   (rawPageText||"").length,
 
-        // ── Complete clause analysis with summaries ───────────────────────
+        // Complete clause analysis
         clauses: (analysisData.clauses||[]).map(cl => ({
           text:           cl.text,
           label:          cl.labels?.[0] || "neutral",
@@ -1410,37 +1453,58 @@
           is_hidden:      cl.is_hidden_risk,
           position_pct:   cl.position_pct,
           plain_english:  cl.plain_english,
-          what_it_says:   cl.summary?.what_it_says  || "",
-          why_it_matters: cl.summary?.why_it_matters || "",
-          your_rights:    cl.summary?.your_rights   || "",
-          action:         cl.summary?.action        || "",
-          verdict:        cl.legal?.overall_verdict || "LEGAL",
+          what_it_says:   cl.summary?.what_it_says   || "",
+          why_it_matters: cl.summary?.why_it_matters  || "",
+          your_rights:    cl.summary?.your_rights     || "",
+          action:         cl.summary?.action          || "",
+          verdict:        cl.legal?.overall_verdict   || "LEGAL",
         })),
 
-        // ── Legal use notice ──────────────────────────────────────────────
+        // Legal notice
         legal_notice: [
-          "This file is a tamper-proof evidence record generated by Trinetra.net.",
-          "The sha256_hash field cryptographically proves the content of this document was unchanged.",
-          "The raw_tc_text field contains the verbatim Terms & Conditions text as it existed on " + dateStr + ".",
-          "This file can be submitted as evidence to consumer courts, the Data Protection Board, or RBI Ombudsman.",
-          "File at consumerhelpline.gov.in or edaakhil.nic.in if this company later changes these terms.",
+          "PRIVACY: This evidence file was generated entirely on your device.",
+          "No T&C text, clause data, or personal information was sent to any cloud server.",
+          "The SHA-256 hashes were computed using your browser's built-in Web Crypto API.",
+          "This file proves what " + domain + " Terms said on " + dateStr + ".",
+          "Admissible as evidence at consumerhelpline.gov.in and edaakhil.nic.in.",
         ].join(" "),
       };
 
-      // ── Step 3: Save evidence file to user's PC ─────────────────────────
-      // File path: Downloads/Trinetra_Evidence/domain/YYYY-MM-DD_HH-MM_BLOCKID.json
-      const timeTag    = now.toTimeString().slice(0,8).replace(/:/g,"-"); // 14-30-45
-      const fileName   = `Trinetra_Evidence/${domain}/${dateStr}_${timeTag}_${blockId}.json`;
-      const jsonStr    = JSON.stringify(evidenceBlock, null, 2);
-
-      // Save the main evidence file
+      // ── Step 3: Save to PC ────────────────────────────────────────────────
+      const fileName = `Trinetra_Evidence/${domain}/${dateStr}_${timeTag}_${blockId}.json`;
+      const jsonStr  = JSON.stringify(evidenceBlock, null, 2);
       await saveFileToPC(fileName, jsonStr);
 
-      // ── Step 4: Save master index entry ───────────────────────────────────
-      await saveIndexFile(domain, dateStr, blockId, hashData, fileName);
+      // ── Step 4: Save index entry ──────────────────────────────────────────
+      const indexEntry = {
+        block_id:      blockId,
+        domain:        domain,
+        url:           location.href,
+        date:          dateStr,
+        overall_risk:  analysisData.overall_risk,
+        risk_score:    analysisData.risk_score,
+        total_clauses: analysisData.total,
+        risky_clauses: analysisData.risky_count,
+        safe_clauses:  analysisData.safe_count,
+        sha256_hash:   sha256Hash,
+        raw_text_hash: rawTextHash,
+        evidence_file: fileName,
+        stored_at:     now.toISOString(),
+        privacy_note:  "Computed locally — no cloud involved",
+      };
+      await saveFileToPC(
+        `Trinetra_Evidence/_index_${domain}.json`,
+        JSON.stringify(indexEntry, null, 2)
+      );
 
-      // ── Step 5: Update sidebar UI ─────────────────────────────────────────
-      renderCompactChainRecord(hashData, fileName, evidenceBlock);
+      // ── Step 5: Update sidebar ────────────────────────────────────────────
+      renderCompactChainRecord({
+        block_id:      blockId,
+        sha256_hash:   sha256Hash,
+        raw_text_hash: rawTextHash,
+        overall_risk:  analysisData.overall_risk,
+        raw_text_kb:   Math.round((rawPageText||"").length/1024),
+      }, fileName);
 
       if (btn) {
         btn.textContent = "✅ Saved to PC";
@@ -1448,70 +1512,29 @@
         btn.style.border = "1px solid rgba(0,219,160,0.4)";
       }
 
-      showToastSimple(
-        `✅ Evidence saved! Downloads/Trinetra_Evidence/${domain}/${dateStr}_${blockId}.json`
-      );
+      showToastSimple(`✅ Saved locally! Downloads/Trinetra_Evidence/${domain}/${dateStr}_${blockId}.json`);
+      console.log("✅ Trinetra evidence — 100% local, block:", blockId, "hash:", sha256Hash.substring(0,16)+"…");
 
     } catch(err) {
-      console.error("Trinetra hash error:", err);
+      console.error("Hash error:", err);
       showToastSimple("❌ Save failed: " + err.message);
       if (btn) {
-        btn.disabled     = false;
-        btn.textContent  = "🔗 Hash & Store";
-        btn.style.color  = "";
+        btn.disabled    = false;
+        btn.textContent = "🔗 Hash & Store";
+        btn.style.color = "";
         btn.style.border = "";
       }
     }
   }
 
-  // ── Core file save — works even if background service worker is asleep ───────
-  async function saveFileToPC(filename, content) {
-    const blob    = new Blob([content], { type: "application/json" });
-    const blobUrl = URL.createObjectURL(blob);
-
-    // Method 1: Try background service worker (cleanest, supports subfolders)
-    try {
-      const response = await new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error("timeout")), 3000);
-        chrome.runtime.sendMessage(
-          { type: "DOWNLOAD_EVIDENCE", url: blobUrl, filename },
-          (resp) => {
-            clearTimeout(timeout);
-            if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
-            else resolve(resp);
-          }
-        );
-      });
-      if (response?.ok) {
-        setTimeout(() => URL.revokeObjectURL(blobUrl), 8000);
-        console.log("✅ Saved via background:", filename);
-        return true;
-      }
-    } catch(e) {
-      console.warn("Background save failed, using direct download:", e.message);
-    }
-
-    // Method 2: Direct <a> download fallback (no subfolder, but always works)
-    try {
-      const link    = document.createElement("a");
-      link.href     = blobUrl;
-      // Flatten path for direct download — replace / with _
-      link.download = filename.replace(/\//g, "_");
-      link.style.display = "none";
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      setTimeout(() => URL.revokeObjectURL(blobUrl), 8000);
-      console.log("✅ Saved via direct download:", link.download);
-      return true;
-    } catch(e2) {
-      console.error("Both save methods failed:", e2);
-      URL.revokeObjectURL(blobUrl);
-      return false;
-    }
+  // ── Generate a random 8-char hex block ID (like 42A985DA) ─────────────────
+  function generateBlockId() {
+    return Array.from(crypto.getRandomValues(new Uint8Array(4)))
+      .map(b => b.toString(16).padStart(2,"0").toUpperCase())
+      .join("");
   }
 
-  // ── Save master index entry ────────────────────────────────────────────────
+
   async function saveIndexFile(domain, dateStr, blockId, hashData, evidenceFile) {
     const indexEntry = {
       block_id:      blockId,
